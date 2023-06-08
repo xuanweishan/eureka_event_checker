@@ -15,6 +15,11 @@ Check node event such as:
 import sys
 import os
 
+sys.dont_write_bytecode = True
+
+import src.run_cli as rc
+import src.job_collector as jc
+
 def load_state(file_name):
     if not os.path.isfile(file_name):
         print("No such file: %s" % file_name)
@@ -31,26 +36,28 @@ def load_state(file_name):
             continue
         
         if len(state_data) == 14:
-            node_state[node_name] = {'Job'      : {state_data[3]:{
-                                                   'User'     : state_data[1],
-                                                   'Job_name' : state_data[2],
-                                                   'Time_used': state_data[4],
-                                                  }},
-                                     '%CPU'     : state_data[5],
-                                     'CPU_Mem'  : state_data[6],
-                                     'T_CPU'    : state_data[7],
-                                     '%GPU'     : state_data[8],
-                                     'GPU_Mem'  : state_data[9],
-                                     'T_GPU'    : state_data[10],
-                                     'IB_speed' : state_data[11],
-                                     'T_IB'     : state_data[12],
-                                     'Disk'     : state_data[13],
-                                    }
+            node_state[node_name] = {
+                'Job': {state_data[3]:{
+                    'User': state_data[1],
+                    'Job_name': state_data[2],
+                    'Time_used': state_data[4],
+                }},
+                '%CPU': state_data[5],
+                'CPU_Mem': state_data[6],
+                'T_CPU': state_data[7],
+                '%GPU': state_data[8],
+                'GPU_Mem': state_data[9],
+                'T_GPU': state_data[10],
+                'IB_speed': state_data[11],
+                'T_IB': state_data[12],
+                'Disk': state_data[13],
+             }
         elif len(state_data) == 4:
-            node_state[node_name]['Job'][state_data[2]] = {'User'     : state_data[0],
-                                                           'Job_name' : state_data[1],
-                                                           'Time_used': state_data[3],
-                                                          }
+            node_state[node_name]['Job'][state_data[2]] = {
+                'User'     : state_data[0],
+                'Job_name' : state_data[1],
+                'Time_used': state_data[3],
+            }
         elif len(state_data) == 2:
             node_state[node_name] = {'State': 'Down'}
             continue
@@ -126,42 +133,115 @@ def check_disk_usage(node_state, Disk_usage_threshold):
     
     return high_usage_nodes
 
+def check_non_pbs_job(current_state, all_jobs, all_users):
+    # 1. check non pbs user jobs
+    large_job_in_00 = {}
+    non_pbs_jobs = {}
+    for node in current_state:
+        # 1.1 Skip if the node is down
+        if current_state[node]['State'] == 'Down': continue
+        # 1.2 Check large jobs in login node
+        if node == 'eureka00':
+            for user in all_jobs[node]:
+                large_job_in_00[user] = {}
+                for job in all_jobs[node][user]:
+                    if float(all_jobs[node][user][job]['%CPU']) > 100.\
+                    or float(all_jobs[node][user][job]['%MEM']) > 25:
+                        large_job_in_00[user][job] = {
+                            '%CPU': all_jobs[node][user][job]['%CPU'],
+                            '%MEM': all_jobs[node][user][job]['%MEM'],
+                            'Command': all_jobs[node][user][job]['Command'],
+                        }
+                    
+                if len(large_job_in_00[user]) == 0:
+                    large_job_in_00.pop(user)
+            continue
+        # 1.3 Check non pbs user job in computing nodes
+        non_pbs_jobs[node] = {}
+        for job in all_jobs[node]:
+            pbs_user = [ current_state[node]['Job'][job]['User'] for job in current_state[node]['Job'] ]
+            for user in all_jobs[node]:
+                non_pbs_jobs[node][user] = {}
+                if user in pbs_user:
+                    continue
+                if user in all_users:
+                    for job in all_jobs[node][user]:
+                    # Exclude the nvidia-cuda-server
+                        if 'nvidia-cuda-mps-server' in all_jobs[node][user][job]['Command']:
+                            continue
+                        non_pbs_jobs[node][user][job] = {
+                            '%CPU': all_jobs[node][user][job]['%CPU'],
+                            '%MEM': all_jobs[node][user][job]['%MEM'],
+                            'Command': all_jobs[node][user][job]['Command'],
+                        }
+                if len(non_pbs_jobs[node][user]) == 0:
+                    non_pbs_jobs[node].pop(user)
+        if len(non_pbs_jobs[node]) == 0:
+            non_pbs_jobs.pop(node)
+            
+    return large_job_in_00, non_pbs_jobs
+
+def alert(event, data):
+    return 0
+
 if __name__ == '__main__':
     # 0. Load node state files
     current_state = load_state(sys.argv[1])
     previous_state = load_state(sys.argv[2])
     
-    for node in sorted(current_state):
-        print(node, current_state[node])
-    for node in sorted(current_state):
-        print(node, previous_state[node])
     # 1. Node down
     new_down_nodes = check_node_down(current_state, previous_state)
     
     # 2. CPU high temperature
     CPU_temp_limit = 65.
     CPU_high_temp_nodes = check_CPU_temp(current_state, CPU_temp_limit)
+    if len(CPU_high_temp_nodes) > 0:
+        alert("CPU high temp", CPU_high_temp_nodes)
+
+    print(CPU_high_temp_nodes)
 
     # 3. GPU high temperature
     GPU_temp_limit = 80.
     GPU_high_temp_nodes = check_GPU_temp(current_state, GPU_temp_limit)
-    
+    if len(GPU_high_temp_nodes) > 0:
+        alert("GPU high temp", GPU_high_temp_nodes)
+
+    print(GPU_high_temp_nodes)
+
     # 4. IB high temperature
     IB_temp_limit = 105.
     IB_high_temp_nodes = check_IB_temp(current_state, IB_temp_limit)
+    if len(IB_high_temp_nodes) > 0:
+        alert("IB high temp", IB_high_temp_nodes)
+
+    print(IB_high_temp_nodes)
 
     # 5. IB speed incorrect
     IB_speed_threshold = 100.
     IB_low_speed_nodes = check_IB_speed(current_state, IB_speed_threshold)
-    
+    if len(IB_low_speed_nodes) > 0:
+        alert("IB low speed", IB_low_speed_nodes)
+
+    print(IB_low_speed_nodes)
+
     # 6. Disk volume uages
     Disk_usage_threshold = 80
     Disk_high_usage_nodes = check_disk_usage(current_state, Disk_usage_threshold)
-        
-    print new_down_nodes
-    print CPU_high_temp_nodes
-    print GPU_high_temp_nodes
-    print IB_high_temp_nodes
-    print IB_low_speed_nodes
-    print Disk_high_usage_nodes
+    if len(Disk_high_usage_nodes) > 0:
+        alert("Disk high usage", Disk_high_usage_nodes)
+
+    print(Disk_high_usage_nodes)
+
     # 7. Non-pbs job 
+    alive_nodes = []
+    for node in current_state:
+        if current_state[node]['State'] != 'Down':
+            alive_nodes.append(node)
+
+    all_jobs = jc.get_all_jobs_in_all_nodes(alive_nodes)
+    all_users = {}
+    rc.run_cli(['ls','/home/'], all_users)
+    large_job_in_00, non_pbs_jobs = check_non_pbs_job(current_state, all_jobs, all_users['ls'])
+    print large_job_in_00
+    for node in non_pbs_jobs:
+        print(node, non_pbs_jobs[node])
