@@ -261,14 +261,14 @@ def alert(event, data, send_mail):
                         data[user][job]['Command'],
                         )
         elif "Non-pbs job" in event:
-            content += "%-12s %-16s %-16s %-12s %s\n" %('Node', 'pbs_user', 'non-pbs_user', 'npbs_PID', 'Command')
+            content += "%-12s %-16s %-16s %-12s %s\n" %('Node', 'pbs_user', 'non-pbs_user', 'non_pbs_PID', 'Command')
             for node in data:
                 pbs_user = data[node].pop('pbs_user')
                 for user in data[node]:
                     for job in data[node][user]:
                         content += "%-12s %-16s %-16s %-12s %s\n" %(
                             node,
-                            pbs_user,
+                            ','.join(pbs_user),
                             user,
                             job,
                             ' '.join(data[node][user][job]['Command']),
